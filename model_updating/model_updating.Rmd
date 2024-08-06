@@ -1,0 +1,553 @@
+---
+title: "model updating"
+author: "me"
+date: "2024-02-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, cmdstanr, posterior, bayesplot, deSolve, conflicted,
+               loo, gridExtra, latex2exp,viridis,scales)
+
+output_folder = "~/Phd material/qAOP_framework/model_updating"
+```
+
+
+#Define ODE systems related to the 3 qAOPs
+```{r}
+qAOPup = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dMIE1 = -tau_1*MIE1
+       dKE1 = MIE1 - d1 * KE1
+       dKE2 = (k_12 * KE1 / (h_12 + KE1)) - d2 * KE2
+       
+       list(c(dMIE1, dKE1, dKE2))
+})
+}
+
+qAOPdown = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dMIE2 = -tau_2*MIE2
+       dKE3 = MIE2 - d3 * KE3
+       dKE2 = (k_32 * KE3) - d2 * KE2
+       
+       list(c(dMIE2, dKE3, dKE2))
+})
+}
+
+qAOPnetwork = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dMIE1 = -tau_1*MIE1
+       dMIE2 = -tau_2*MIE2
+       dKE1 = MIE1 - d1 * KE1
+       dKE3 = MIE2 - d3 * KE3
+       dKE2 = (alpha * (k_32 * KE3) + (1-alpha) * (k_12 * KE1 / (h_12 + KE1))) - d2 * KE2
+       
+       list(c(dMIE1, dMIE2, dKE1, dKE3, dKE2))
+})
+}
+
+```
+
+#Generate artificial data using the qAOPnetwork system
+```{r}
+inistate = c(MIE1=0.1, MIE2=0.05, KE1 = 0, KE3 = 0, KE2 = 0)
+finish = seq(0, 250, by = 0.1)
+pars = c(tau_1=0.05, tau_2 = 0, d1 = 0.05, d3 = 0.06, alpha = 0.8, k_32 = 0.08, k_12 = 0.07, h_12 = 5, d2 = 0.1)
+
+out = as.data.frame(ode(inistate, finish, func = qAOPnetwork, pars))
+
+ggplot() + theme_bw() +
+  geom_line(data = out, aes(x=time, y=MIE1, color = "MIE1")) + 
+  geom_line(data = out, aes(x=time, y=MIE2, color = "MIE2")) +
+  geom_line(data = out, aes(x=time, y=KE1, color = "KE1")) + 
+  geom_line(data = out, aes(x=time, y=KE3, color = "KE3")) + 
+  geom_line(data = out, aes(x=time, y=KE2, color = "KE2")) +
+  labs(title = "ODE Model", x="Time", y = "", color= "Variable") 
+
+write.csv(pars, paste0(output_folder, "/parameters.csv"))
+```
+
+
+
+
+
+```{r}
+#We now generate fake data from the model by adding noise to the solutions of the system.
+finish <- seq(1, 250, by = 15)  # assume we have data on 11 time points
+out <- as.data.frame(ode(inistate, finish, func = qAOPnetwork, parms = pars))
+nrep <- 5  # number of fake replicates
+std <- 0.05  # set standard deviation to add noise to the solution
+
+fakedata <- data.frame(time = numeric(), MIE1 = numeric(),  MIE2 = numeric(), KE1 = numeric(), KE3 = numeric(), KE2 = numeric(), REPLICATE = numeric())
+
+for (i in 1:length(finish)) {
+  for (j in 1:nrep) {
+    fakedata <- rbind(fakedata, data.frame(time = finish[i], MIE1 = out$MIE1[i] + rnorm(1, mean = 0, sd = std),
+                                             MIE2 = out$MIE2[i] + rnorm(1, mean = 0, sd = std),
+                                             KE1 = out$KE1[i] + rnorm(1, mean = 0, sd = std), 
+                                             KE3 = out$KE3[i] + rnorm(1, mean = 0, sd = std), 
+                                             KE2 = out$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))  }
+}
+variable = "KE2"
+ggplot() + theme_bw() +
+  geom_point(data = fakedata, aes(time, get(variable), color = as.factor(REPLICATE))) + 
+  labs(x = "Time", y = variable, color = "Replicate number")
+
+write.csv(fakedata, paste0(output_folder,"/", "fakedatanetwork", ".csv"))
+
+length(finish)
+```
+#Fit qAOPup
+```{r}
+conflict_prefer("sd", "stats")
+conflict_prefer("filter", "dplyr")
+#redefine the data in terms of mean and sd
+data_stan = fakedata %>% 
+  pivot_longer(!c(time,REPLICATE), names_to = "StateVar", values_to = "value") %>%
+  group_by(time,StateVar) %>%
+  summarise(mean = mean(value), sd = sd(value)) %>%
+  ungroup() %>% filter(StateVar %in% c("MIE1", "KE1", "KE2"))
+
+#define the input data for the cmdrstan run (the variables need to coincide with what we have defined in the "data" block of the Stan file)
+data_list=list(
+N = length(unique(fakedata$time)),
+t0 = 0,
+ts = unique(fakedata$time), #does not have to include t0
+y = as.matrix(data_stan %>% select(-sd)%>%
+                      group_by(time) %>%
+  pivot_wider(names_from = StateVar, values_from = mean) %>%
+    ungroup()%>%select(-time))[,c(3,1,2)],
+sigma = as.matrix(data_stan %>% select(-mean)%>%
+                      group_by(time) %>%
+  pivot_wider(names_from = StateVar, values_from = sd) %>%
+    ungroup()%>%select(-time))[,c(3,1,2)],
+KE10 = 0,
+KE20 = 0
+)
+```
+
+#RUN qAOPup
+```{r}
+# Extract draws and convert to data frame with iteration and chain
+draws_df <- fit$draws(format = "df", variables = c("tau1", "d1", "k_12", "h_12", "d2", "S0")) %>%
+  rename(S1 = S0) %>%
+  mutate(.iteration = rep(1:(nrow(.) / max(.chain)), times = max(.chain)),
+         .chain = rep(1:max(.chain), each = nrow(.) / max(.chain)))
+
+# Custom labels using expressions for ggplot2
+custom_labels <- c(
+  tau1 = "tau[1]",
+  d1 = "d[1]",
+  k_12 = "k[12]",
+  h_12 = "h[12]",
+  d2 = "d[2]",
+  S1 = "S[1]"
+)
+
+# Remove unnecessary columns
+draws_df <- draws_df %>% select(-.draw)
+
+# Base theme with larger axis title, facet text size, legend text size, and tick labels
+base_theme <- theme_minimal() + 
+  theme(
+    axis.title = element_text(size = 18),  # Larger axis titles
+    strip.text = element_text(size = 18),  # Larger facet labels
+    legend.title = element_text(size = 18), # Larger legend title
+    legend.text = element_text(size = 18),  # Larger legend text
+    axis.text = element_text(size = 14),    # Larger tick labels
+    legend.margin = margin(t = 0, r = 30, b = 0, l = 0)  # Increase margin around legend
+  )
+
+# Function to round axis labels to 3 decimal places
+round3 <- label_number(accuracy = 0.001)
+
+# Create trace plot
+fit_trace <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = .iteration, y = value, color = as.factor(.chain))) +
+  geom_line(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Iteration", y = "Parameter value", color = "Chain") +
+  scale_x_continuous(breaks = c(0, 2000, 4000)) +  # Adjust x-axis breaks
+  base_theme
+
+# Create density plot
+fit_density <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = as.factor(.chain))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Parameter value", y = "Density", fill = "Chain") +
+  scale_x_continuous(labels = round3, breaks = function(x) {
+    breaks <- pretty(x, n = 3)
+    if (length(breaks) < 3) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust x-axis breaks to three values with 3 decimal digits
+  base_theme
+
+# Create density plot with vertical lines
+fit_density_lines <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = as.factor(.chain))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Parameter value", y = "Density", fill = "Chain") +
+  geom_vline(data = data.frame(variable = c("tau1", "d1", "S1"), xintercept = c(0.05, 0.05, 0.1)), 
+             aes(xintercept = xintercept), color = "red", linetype = "dashed") +
+  scale_x_continuous(labels = round3, breaks = function(x) {
+    breaks <- pretty(x, n = 3)
+    if (length(breaks) < 3) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust x-axis breaks to three values with 3 decimal digits
+  base_theme
+
+# Save the plots as TIFF files
+tiff(paste0(output_folder, "/", "Trace-plot_qAOPup", ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_trace)
+dev.off()
+
+tiff(paste0(output_folder, "/", "Density-plot_qAOPup", ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_density)
+dev.off()
+
+tiff(paste0(output_folder, "/", "Density-plot_qAOPup_lines", ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_density_lines)
+dev.off()
+
+# Display the plots together
+grid.arrange(fit_trace, fit_density, fit_density_lines, ncol = 1)
+
+# Save the draws and summaries
+draws <- fit$draws(format = "draws_matrix", variables = c("tau1", "d1", "k_12", "h_12", "d2", "S0"))
+fit_summary <- fit$summary()
+
+loglikelihood <- fit$draws(format = "draws_matrix", variables = 'logLikelihood')
+draws_complete <- fit$draws(format = "draws_matrix")
+
+sumPar <- data.frame(fit_summary) %>% column_to_rownames("variable")
+
+parSets <- draws
+
+#saveRDS(fit, file = '~/Phd material/qAOP_framework/model_updating/fitqAOPup.rds')
+#write_csv(data.frame(fit_summary), "~/Phd material/qAOP_framework/model_updating/parameter_summary_qAOPup.csv")
+#write_csv(data.frame(draws_complete), "~/Phd material/qAOP_framework/model_updating/draws_qAOPup.csv")
+
+```
+
+```{r}
+x = fit$loo(variables = "logLikelihood", cores = 3)
+x
+pareto_k_table(x)
+pareto_k_values(x)
+
+
+estimates = data.frame(x$estimates)
+write.csv(estimates, paste0(output_folder, "/loo_output_qAOPup.csv"))
+```
+
+```{r}
+#Plot the fit 
+conflict_prefer("filter","dplyr")
+
+finish <- seq(1, 275, by = 0.1) 
+
+plot_KE = function(variable, ymin, ymax) {
+  # Adjust margins to fit larger labels
+  par(mar = c(5, 6, 4, 2) + 0.1)  # Increase left margin for y-axis label
+  
+  # Create a dataframe to store all solutions
+  all_solutions <- data.frame(time = finish)
+  
+  plot(x = (data_stan %>% filter(StateVar == variable))$time, 
+       y = (data_stan %>% filter(StateVar == variable))$mean, 
+       type = "p", pch = 19, ylab = paste0(variable, " (a.u.)"), xlab = "Time (a.u.)", 
+       xlim = c(0, 275), ylim = c(ymin, ymax), cex.lab = 3, cex.axis = 2)
+  
+  arrows((data_stan %>% filter(StateVar == variable))$time, 
+         (data_stan %>% filter(StateVar == variable))$mean - (data_stan %>% filter(StateVar == variable))$sd, 
+         (data_stan %>% filter(StateVar == variable))$time, 
+         (data_stan %>% filter(StateVar == variable))$mean + (data_stan %>% filter(StateVar == variable))$sd, 
+         length = 0, angle = 90, code = 3, lty = 2, lwd = 0.8)
+  
+  for(i in 1:100){
+      k = sample(1:nrow(draws), 1)
+      pars = c(tau_1 = draws[[k, "tau1"]],
+               d1 = draws[[k, "d1"]],
+               k_12 = draws[[k, "k_12"]],
+               h_12 = draws[[k, "h_12"]],
+               d2 = draws[[k, "d2"]])
+      inistate = c(MIE1 = draws[[k, "S0"]], KE1 = 0, KE2 = 0)
+      out = ode(y = inistate, times = finish, func = qAOPup, parms = pars)
+      solution <- data.frame(out) %>% select(time, all_of(variable))
+      colnames(solution)[2] <- paste0("solution_", i)
+      all_solutions <- left_join(all_solutions, solution, by = "time")
+      
+      lines(solution, main = "", ylab = "x", col = alpha("blue", 0.1), lty = 1)
+  }
+  
+  # Calculate the mean solution at each time point
+  mean_solution <- all_solutions %>% rowwise() %>% mutate(mean_value = mean(c_across(starts_with("solution_")), na.rm = TRUE))
+  lines(mean_solution$time, mean_solution$mean_value, col = "red", lwd = 2)
+  
+  plot <- recordPlot()
+  tiff(paste0(output_folder, "/", variable, "qAOPup", ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+  print(plot)
+  dev.off()
+}
+
+plot_KE("MIE1", -0.1, 0.15)
+plot_KE("KE1", -0.05, 0.9)
+plot_KE("KE2", -0.05, 0.6)
+
+```
+
+#Fit qAOPdown
+```{r}
+conflict_prefer("sd", "stats")
+conflict_prefer("filter", "dplyr")
+#redefine the data in terms of mean and sd
+data_stan = fakedata %>% 
+  pivot_longer(!c(time,REPLICATE), names_to = "StateVar", values_to = "value") %>%
+  group_by(time,StateVar) %>%
+  summarise(mean = mean(value), sd = sd(value)) %>%
+  ungroup() %>% filter(StateVar %in% c("MIE2", "KE3", "KE2"))
+
+#define the input data for the cmdrstan run (the variables need to coincide with what we have defined in the "data" block of the Stan file)
+data_list=list(
+N = length(unique(fakedata$time)),
+t0 = 0,
+ts = unique(fakedata$time), #does not have to include t0
+y = as.matrix(data_stan %>% select(-sd)%>%
+                      group_by(time) %>%
+  pivot_wider(names_from = StateVar, values_from = mean) %>%
+    ungroup()%>%select(-time))[,c(3,2,1)],
+sigma = as.matrix(data_stan %>% select(-mean)%>%
+                      group_by(time) %>%
+  pivot_wider(names_from = StateVar, values_from = sd) %>%
+    ungroup()%>%select(-time))[,c(3,2,1)],
+KE30 = 0,
+KE20 = 0,
+tau2 = 0
+)
+```
+
+#RUN qAOPdown
+```{r}
+
+
+options(mc.cores = parallel::detectCores())  # Use all available cores
+#, stanc.allow_optimizations = TRUE, stanc.auto_format = TRUE
+chains <- 4 # Number of chains
+iter <- 10000  # Number of iterations
+warmup <- 6000 # Number of warmup iterations
+thin <- 1  # Thinning parameter
+
+compiled_model <- cmdstan_model("/home/ditilliof/Phd material/qAOP_framework/model_updating/qAOPdown.stan") #modify according to you file path
+
+# This is for cmdstanr
+fit <- compiled_model$sample(data = data_list, 
+                    parallel_chains = getOption("mc.cores", 1), 
+                    chains=chains,
+                    iter_warmup = warmup, 
+                    iter_sampling = iter-warmup,
+                    #show_messages = FALSE,
+                    refresh = 1,
+                    #seed = 123456789
+                    )
+
+```
+
+```{r}
+# Extract draws and convert to data frame with iteration and chain
+draws_df <- fit$draws(format = "df", variables = c("d3", "k_32", "d2", "S0")) %>%
+  rename(S2 = S0) %>%
+  mutate(.iteration = rep(1:(nrow(.) / max(.chain)), times = max(.chain)),
+         .chain = rep(1:max(.chain), each = nrow(.) / max(.chain)))
+
+# Custom labels using expressions for ggplot2
+custom_labels <- c(
+  d3 = "d[3]",
+  k_32 = "k[32]",
+  d2 = "d[2]",
+  S2 = "S[2]"
+)
+
+# Remove unnecessary columns
+draws_df <- draws_df %>% select(-.draw)
+
+# Base theme with larger axis title, facet text size, legend text size, and tick labels
+base_theme <- theme_minimal() + 
+  theme(
+    axis.title = element_text(size = 18),  # Larger axis titles
+    strip.text = element_text(size = 18),  # Larger facet labels
+    legend.title = element_text(size = 18), # Larger legend title
+    legend.text = element_text(size = 18),  # Larger legend text
+    axis.text = element_text(size = 14),    # Larger tick labels
+    legend.margin = margin(t = 0, r = 30, b = 0, l = 0)  # Increase margin around legend
+  )
+
+# Function to round axis labels to 3 decimal places
+round3 <- label_number(accuracy = 0.001)
+
+# Create trace plot
+fit_trace <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = .iteration, y = value, color = as.factor(.chain))) +
+  geom_line(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Iteration", y = "Parameter value", color = "Chain") +
+  scale_x_continuous(breaks = c(0, 2000, 4000)) +  # Adjust x-axis breaks
+  base_theme
+
+# Create density plot
+fit_density <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = as.factor(.chain))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Parameter value", y = "Density", fill = "Chain") +
+  scale_x_continuous(labels = round3, breaks = function(x) {
+    breaks <- pretty(x, n = 3)
+    if (length(breaks) < 3) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust x-axis breaks to three values with 3 decimal digits
+  base_theme
+
+# Create density plot with vertical lines
+fit_density_lines <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = as.factor(.chain))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Parameter value", y = "Density", fill = "Chain") +
+  geom_vline(data = data.frame(variable = c("d3", "S2"), xintercept = c(0.06, 0.05)), 
+             aes(xintercept = xintercept), color = "red", linetype = "dashed") +
+  scale_x_continuous(labels = round3, breaks = function(x) {
+    breaks <- pretty(x, n = 3)
+    if (length(breaks) < 3) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust x-axis breaks to three values with 3 decimal digits
+  base_theme
+
+# Save the plots as TIFF files
+tiff(paste0(output_folder, "/", "Trace-plot_qAOPdown", ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_trace)
+dev.off()
+
+tiff(paste0(output_folder, "/", "Density-plot_qAOPdown", ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_density)
+dev.off()
+
+tiff(paste0(output_folder, "/", "Density-plot_qAOPdown_lines", ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_density_lines)
+dev.off()
+
+# Display the plots together
+grid.arrange(fit_trace, fit_density, fit_density_lines, ncol = 1)
+
+# Save the draws and summaries
+draws <- fit$draws(format = "draws_matrix", variables = c("d3", "k_32", "d2", "S0"))
+fit_summary <- fit$summary()
+
+loglikelihood <- fit$draws(format = "draws_matrix", variables = 'logLikelihood')
+draws_complete <- fit$draws(format = "draws_matrix")
+
+sumPar <- data.frame(fit_summary) %>% column_to_rownames("variable")
+
+parSets <- draws
+
+# saveRDS(fit, file = '~/Phd material/qAOP_framework/model_updating/fitqAOPdown.rds')
+# write_csv(data.frame(fit_summary), "~/Phd material/qAOP_framework/model_updating/parameter_summary_qAOPdown.csv")
+# write_csv(data.frame(draws_complete), "~/Phd material/qAOP_framework/model_updating/draws_qAOPdown.csv")
+
+```
+
+```{r}
+x = fit$loo(variables = "logLikelihood", cores = 3)
+x
+pareto_k_table(x)
+pareto_k_values(x)
+
+
+estimates = data.frame(x$estimates)
+write.csv(estimates, paste0(output_folder, "/loo_output_qAOPdown.csv"))
+```
+
+```{r}
+# Plot the fit 
+conflict_prefer("filter","dplyr")
+
+finish <- seq(1, 275, by = 0.1) 
+
+plot_KE = function(variable, ymin, ymax) {
+  # Adjust margins to fit larger labels
+  par(mar = c(5, 6, 4, 2) + 0.1)  # Increase left margin for y-axis label
+  
+  # Create a dataframe to store all solutions
+  all_solutions <- data.frame(time = finish)
+  
+  plot(x = (data_stan %>% filter(StateVar == variable))$time, 
+       y = (data_stan %>% filter(StateVar == variable))$mean, 
+       type = "p", pch = 19, ylab = paste0(variable, " (a.u.)"), xlab = "Time (a.u.)", 
+       xlim = c(0, 275), ylim = c(ymin, ymax), cex.lab = 3, cex.axis = 2)
+  
+  arrows((data_stan %>% filter(StateVar == variable))$time, 
+         (data_stan %>% filter(StateVar == variable))$mean - (data_stan %>% filter(StateVar == variable))$sd, 
+         (data_stan %>% filter(StateVar == variable))$time, 
+         (data_stan %>% filter(StateVar == variable))$mean + (data_stan %>% filter(StateVar == variable))$sd, 
+         length = 0, angle = 90, code = 3, lty = 2, lwd = 0.8)
+  
+  for (i in 1:100) {
+    k = sample(1:nrow(draws), 1)
+    pars = c(tau_2 = 0,
+             d3 = draws[[k, "d3"]],
+             k_32 = draws[[k, "k_32"]],
+             d2 = draws[[k, "d2"]])
+    inistate = c(MIE2 = draws[[k, "S0"]], KE3 = 0, KE2 = 0)
+    out = ode(y = inistate, times = finish, func = qAOPdown, parms = pars)
+    solution <- data.frame(out) %>% select(time, all_of(variable))
+    colnames(solution)[2] <- paste0("solution_", i)
+    all_solutions <- left_join(all_solutions, solution, by = "time")
+    
+    lines(solution, main = "", ylab = "x", col = alpha("blue", 0.1), lty = 1)
+  }
+  
+  # Calculate the mean solution at each time point
+  mean_solution <- all_solutions %>% rowwise() %>% mutate(mean_value = mean(c_across(starts_with("solution_")), na.rm = TRUE))
+  lines(mean_solution$time, mean_solution$mean_value, col = "red", lwd = 2)
+  
+  plot <- recordPlot()
+  tiff(paste0(output_folder, "/", variable, "qAOPdown", ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+  print(plot)
+  dev.off()
+}
+
+plot_KE("MIE2", -0.05, 0.2)
+plot_KE("KE3", -0.05, 1)
+plot_KE("KE2", -0.05, 0.6)
+
+```
+
+

@@ -1,0 +1,812 @@
+```{r}
+#Install cmdstanR
+
+install.packages("cmdstanr", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+library(cmdstanr)
+check_cmdstan_toolchain(fix = TRUE, quiet = TRUE)
+library(posterior)
+library(bayesplot)
+color_scheme_set("brightblue")
+library(loo)
+library(RColorBrewer)
+
+#double check that your toolchain is set up properly
+check_cmdstan_toolchain()
+
+install_cmdstan(cores = 2, overwrite=TRUE)
+```
+
+#generate fake data through qAOPB
+```{r}
+library(deSolve)
+library(tidyverse)
+#Here I define the ODE model
+
+qAOPB = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dMIE = -tau*MIE
+       dKE1 = k_KE1 + MIE - d1 * KE1
+       dKE2 = k_12 * KE1 - d2 * KE2
+       
+       list(c(dMIE, dKE1, dKE2))
+})
+}
+
+#Here I choose two different initial states (corresponding to two different dose levels) and I calculate the solutions of the system corresponding to those initial states
+
+inistate1 = c(MIE=0.5, KE1 = 0, KE2 = 0)
+inistate2 = c(MIE=1, KE1 = 0, KE2 = 0)
+finish = seq(0, 100, by = 0.1)
+pars = c(tau=0.05, k_KE1 = 0.2, d1 = 0.5, k_12 = 0.3, d2 = 0.4)
+out1 = as.data.frame(ode(inistate1, finish, func = qAOPB, pars))
+out2 = as.data.frame(ode(inistate2, finish, func = qAOPB, pars))
+
+ggplot() + theme_bw() +
+  geom_line(data = out1, aes(x=time, y=KE1, color = "KE1")) + 
+  geom_line(data = out1, aes(x=time, y=MIE, color = "MIE")) +
+  geom_line(data = out1, aes(x=time, y=KE2, color = "KE2")) +
+  labs(title = "ODE Model", x="Time", y = "", color= "Variable") 
+  #scale_color_manual(values = c("blue", "red", "green"), labels = c("MIE", "KE1","KE2"))
+```
+
+
+```{r}
+#plot for the second dose level
+ggplot() + theme_bw() +
+  geom_line(data = out2, aes(x=time, y=KE1, color = "KE1")) + 
+  geom_line(data = out2, aes(x=time, y=MIE, color = "MIE")) +
+  labs(title = "ODE Model", x="Time", y = "", color= "Variable") +
+  scale_color_manual(values = c("blue", "red"), labels = c("MIE", "KE1"))
+```
+
+
+```{r}
+#We now generate fake data from the model by adding noise to the solutions of the system.
+finish <- seq(1, 100, by = 10)  # assume we have data on 11 time points
+out1 <- as.data.frame(ode(inistate1, finish, func = qAOPB, parms = pars))
+out2 <- as.data.frame(ode(inistate2, finish, func = qAOPB, parms = pars))  # calculate solutions again
+nrep <- 5  # number of fake replicates
+std <- 0.1  # set standard deviation to add noise to the solution
+
+fakedata1 <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
+fakedata2 <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE1 = numeric(), REPLICATE = numeric())
+
+for (i in 1:length(finish)) {
+  for (j in 1:nrep) {
+    fakedata1 <- rbind(fakedata1, data.frame(time = finish[i], MIE = out1$MIE[i] + rnorm(1, mean = 0, sd = std),
+                                             KE1 = out1$KE1[i] + rnorm(1, mean = 0, sd = std), 
+                                             KE2 = out1$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
+    fakedata2 <- rbind(fakedata2, data.frame(time = finish[i], MIE = out2$MIE[i] + rnorm(1, mean = 0, sd = std),
+                                             KE1 = out2$KE1[i] + rnorm(1, mean = 0, sd = std),
+                                             KE2 = out2$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
+  }
+}
+variable = "MIE"
+ggplot() + theme_bw() +
+  geom_point(data = fakedata1, aes(time, get(variable), color = as.factor(REPLICATE))) + 
+  labs(x = "Time", y = variable, color = "Replicate number")
+
+write.csv(fakedata1, "~/Phd material/qAOP_framework/model_comparison/fakedataqAOPB.csv")
+```
+
+#generate fakedata through qAOPA
+```{r}
+qAOPA = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dMIE = -tau*MIE
+       dKE1 = k_KE1 + MIE - d1 * KE1
+       dKE2 = k_12 * KE1 - d2 * KE2 + k_KE2 * MIE
+       
+       list(c(dMIE, dKE1, dKE2))
+})
+}
+
+#Here I choose two different initial states (corresponding to two different dose levels) and I calculate the solutions of the system corresponding to those initial states
+
+inistate1 = c(MIE=0.5, KE1 = 0, KE2 = 0)
+inistate2 = c(MIE=1, KE1 = 0, KE2 = 0)
+finish = seq(0, 100, by = 0.1)
+pars = c(tau=0.05, k_KE1 = 0.2, d1 = 0.5, k_12 = 0.3, d2 = 0.4, k_KE2 = 0.5) #k_KE2 = 0.05 in low case
+out1 = as.data.frame(ode(inistate1, finish, func = qAOPA, pars))
+out2 = as.data.frame(ode(inistate2, finish, func = qAOPA, pars))
+
+ggplot() + theme_bw() +
+  geom_line(data = out1, aes(x=time, y=KE1, color = "KE1")) + 
+  geom_line(data = out1, aes(x=time, y=MIE, color = "MIE")) +
+  geom_line(data = out1, aes(x=time, y=KE2, color = "KE2")) +
+  labs(title = "ODE Model", x="Time", y = "", color= "Variable") 
+  #scale_color_manual(values = c("blue", "red", "green"), labels = c("MIE", "KE1","KE2"))
+```
+
+
+```{r}
+#plot for the second dose level
+ggplot() + theme_bw() +
+  geom_line(data = out2, aes(x=time, y=KE1, color = "KE1")) + 
+  geom_line(data = out2, aes(x=time, y=MIE, color = "MIE")) +
+  labs(title = "ODE Model", x="Time", y = "", color= "Variable") +
+  scale_color_manual(values = c("blue", "red"), labels = c("MIE", "KE1"))
+```
+
+```{r}
+#We now generate fake data from the model by adding noise to the solutions of the system.
+finish <- seq(1, 100, by = 10)  # assume we have data on 11 time points
+out1 <- as.data.frame(ode(inistate1, finish, func = qAOPA, parms = pars))
+out2 <- as.data.frame(ode(inistate2, finish, func = qAOPA, parms = pars))  # calculate solutions again
+nrep <- 5  # number of fake replicates
+std <- 0.1  # set standard deviation to add noise to the solution
+
+fakedata1 <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
+fakedata2 <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE1 = numeric(), REPLICATE = numeric())
+
+for (i in 1:length(finish)) {
+  for (j in 1:nrep) {
+    fakedata1 <- rbind(fakedata1, data.frame(time = finish[i], MIE = out1$MIE[i] + rnorm(1, mean = 0, sd = std),
+                                             KE1 = out1$KE1[i] + rnorm(1, mean = 0, sd = std), 
+                                             KE2 = out1$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
+    fakedata2 <- rbind(fakedata2, data.frame(time = finish[i], MIE = out2$MIE[i] + rnorm(1, mean = 0, sd = std),
+                                             KE1 = out2$KE1[i] + rnorm(1, mean = 0, sd = std),
+                                             KE2 = out2$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
+  }
+}
+variable = "KE2"
+ggplot() + theme_bw() +
+  geom_point(data = fakedata1, aes(time, get(variable), color = as.factor(REPLICATE))) + 
+  labs(x = "Time", y = variable, color = "Replicate number")
+
+write.csv(fakedata1, "~/Phd material/qAOP_framework/model_comparison/fakedata_qAOPA.csv")
+```
+
+
+```{r}
+conflict_prefer("sd", "stats")
+#redefine the data in terms of mean and sd
+data1_stan = fakedata1 %>% 
+  pivot_longer(!c(time,REPLICATE), names_to = "StateVar", values_to = "value") %>%
+  group_by(time,StateVar) %>%
+  summarise(mean = mean(value), sd = sd(value)) %>%
+  ungroup()
+
+data2_stan = fakedata2 %>% 
+  pivot_longer(!c(time,REPLICATE), names_to = "StateVar", values_to = "value") %>%
+  group_by(time,StateVar) %>%
+  summarise(mean = mean(value), sd = sd(value)) %>%
+  ungroup()
+
+#define the input data for the cmdrstan run (the variables need to coincide with what we have defined in the "data" block of the Stan file)
+data_list=list(
+N = length(unique(fakedata1$time)),
+t0 = 0,
+ts = unique(fakedata1$time), #does not have to include t0
+y_dose1 = as.matrix(data1_stan %>% select(-sd)%>%
+                      group_by(time) %>%
+  pivot_wider(names_from = StateVar, values_from = mean) %>%
+    ungroup()%>%select(-time))[,c(3,1,2)],
+# y_dose2 = as.matrix(data2_stan %>% select(-sd)%>%
+#                       group_by(time) %>%
+#   pivot_wider(names_from = StateVar, values_from = mean) %>%
+#     ungroup()%>%select(-time))[,c(2,1)],
+sigma_dose1 = as.matrix(data1_stan %>% select(-mean)%>%
+                      group_by(time) %>%
+  pivot_wider(names_from = StateVar, values_from = sd) %>%
+    ungroup()%>%select(-time))[,c(3,1,2)],
+# sigma_dose2 = as.matrix(data2_stan %>% select(-mean)%>%
+#                       group_by(time) %>%
+#   pivot_wider(names_from = StateVar, values_from = sd) %>%
+#     ungroup()%>%select(-time))[,c(2,1)],
+KE10 = 0,
+KE20 = 0
+)
+```
+
+#RUN MODEL 1
+```{r}
+
+
+options(mc.cores = parallel::detectCores())  # Use all available cores
+#, stanc.allow_optimizations = TRUE, stanc.auto_format = TRUE
+chains <- 4 # Number of chains
+iter <- 10000  # Number of iterations
+warmup <- 6000 # Number of warmup iterations
+thin <- 1  # Thinning parameter
+
+compiled_model <- cmdstan_model("/home/ditilliof/Stan_models/DDmodel.stan") #modify according to you file path
+
+# This is for cmdstanr
+fit_dd <- compiled_model$sample(data = data_list, 
+                    parallel_chains = getOption("mc.cores", 1), 
+                    chains=chains,
+                    iter_warmup = warmup, 
+                    iter_sampling = iter-warmup,
+                    #show_messages = FALSE,
+                    refresh = 1,
+                    #seed = 123456789
+                    )
+
+```
+
+```{r}
+
+(fit_dd_trace <- mcmc_trace(fit_dd$draws(format="df",variables =                                             c("tau","k_1","d1","k_12","d2","S0"))))
+                                                                                          
+(fit_dd_density <- mcmc_dens_overlay(fit_dd$draws(format="df",variables = c("tau","k_1","d1","k_12","d2","S0"))))
+draws_dd <- fit_dd$draws(format = "draws_matrix",variables = c("tau","k_1","d1","k_12","d2","S0"))
+(fit_dd_summary <- fit_dd$summary())
+
+wtf = fit_dd$draws(format = "draws_matrix",variables = 'logLikelihood')
+draws_complete = fit_dd$draws(format = "draws_matrix")
+
+
+
+sumPardd<-data.frame(fit_dd_summary) %>% column_to_rownames("variable") 
+
+parSetsdd<- draws_dd
+#fit_dd$init_model_methods()
+write_csv(data.frame(fit_dd_summary), "~/Phd material/qAOP_framework/parameter_summary_model1.csv")
+write_csv(data.frame(draws_complete), "~/Phd material/qAOP_framework/draws_model1.csv")
+```
+#Obtain trace and density plots from saved draws file
+```{r}
+# Create the "convergence_plots" directory if it doesn't exist
+output_dir_convplots <- "~/Phd material/qAOP_framework/model_comparison/convergence_plots"
+if (!dir.exists(output_dir_convplots)) {
+  dir.create(output_dir_convplots, recursive = TRUE)
+}
+
+trace_plots = list()
+density_plots = list()
+
+# Define a function to process the draws files
+process_draws <- function(file_path, chains, iterations, rename_map, selected_parameters) {
+  # Read the CSV file
+  draws <- read.csv(file_path)
+  # Add a chain column
+  draws$chain <- rep(1:chains, each = iterations)
+  # Rename columns based on the rename_map
+  for (old_name in names(rename_map)) {
+    new_name <- rename_map[[old_name]]
+    colnames(draws)[colnames(draws) == old_name] <- new_name
+  }
+  # Select only the specified parameters
+  draws <- draws[, c("chain", selected_parameters)]
+  return(draws)
+}
+
+# Parameters
+chains <- 4
+iterations <- 4000
+iterations2 <- 2000
+rename_map <- list('deg_1' = 'd_1', 'deg_2' = 'd_2', 'k_1' = 'eps')
+
+# Specific parameters for each model
+selected_parameters_B <- c("tau", "eps", "d_1", "k_12", "d_2", "S0")
+selected_parameters_A <- c("tau", "eps", "d_1", "k_12", "d_2", "k_2", "S0")
+selected_parameters_C <- c("tau", "eps", "d_1", "k_12", "d_2", "k_2", "h_2", "S0")
+
+# File paths
+file_paths <- list(
+  "drawsBB" = "~/Phd material/qAOP_framework/model_comparison/qAOPB model/fit using qAOPB data/draws.csv",
+  "drawsAB" = "~/Phd material/qAOP_framework/model_comparison/qAOPA model/fit using qAOPB data/draws.csv",
+  "drawsAA" = "~/Phd material/qAOP_framework/model_comparison/qAOPA model/fit using qAOPA data low/draws.csv",
+  "drawsBA" = "~/Phd material/qAOP_framework/model_comparison/qAOPB model/fit using qAOPA data low/draws.csv",
+  "drawsCC" = "~/Phd material/qAOP_framework/model_comparison/qAOPC model/fit using qAOPC data/draws_model3.csv",
+  "drawsBC" = "~/Phd material/qAOP_framework/model_comparison/qAOPB model/fit using qAOPC data/draws_model1.csv"
+)
+
+# Process the files with their specific parameters
+draws_list <- list(
+  drawsBB = process_draws(file_paths$drawsBB, chains, iterations, rename_map, selected_parameters_B),
+  drawsAB = process_draws(file_paths$drawsAB, chains, iterations, rename_map, selected_parameters_A),
+  drawsAA = process_draws(file_paths$drawsAA, chains, iterations, rename_map, selected_parameters_A),
+  drawsBA = process_draws(file_paths$drawsBA, chains, iterations, rename_map, selected_parameters_B),
+  drawsCC = process_draws(file_paths$drawsCC, chains, iterations2, rename_map, selected_parameters_C),
+  drawsBC = process_draws(file_paths$drawsBC, chains, iterations2, rename_map, selected_parameters_B)
+)
+
+# Set custom color scheme for chains
+color_scheme_set("blue")
+
+# Define the desired width and height for all plots
+plot_width <- 6.8
+plot_height <- 4.2
+
+# Convert each processed data frame to a 3-dimensional array and create trace plots
+for (draw_name in names(draws_list)) {
+  draws <- draws_list[[draw_name]]
+  # Determine parameters present in the draws
+  parameters <- colnames(draws)[colnames(draws) != "chain"]
+  # Create an array to store the draws
+  current_iterations <- if (grepl("CC", draw_name) || grepl("BC", draw_name)) { 
+    iterations2 
+  } else { 
+    iterations 
+  }
+  mcmc_array <- array(NA, dim = c(current_iterations, chains, length(parameters)))
+  # Fill the array with the data
+  for (i in 1:chains) {
+    chain_data <- draws[draws$chain == i, parameters]
+    mcmc_array[, i, ] <- as.matrix(chain_data)
+  }
+  # Add dimension names for parameters
+  dimnames(mcmc_array) <- list(
+    iterations = NULL,
+    chains = NULL,
+    parameters = parameters
+  )
+  # Create the trace plot using mcmc_trace
+  trace_plot <- mcmc_trace(mcmc_array, pars = parameters)
+  trace_plots[[draw_name]] = trace_plot
+  # Create the density plot using mcmc_dens_overlay
+  density_plot <- mcmc_dens_overlay(mcmc_array, pars = parameters)
+  density_plots[[draw_name]] = density_plot
+  # Save the plots as TIFF files with the specified dimensions
+  plot_filename_t <- file.path(output_dir_convplots, paste0(draw_name, "_trace.tiff"))
+  plot_filename_d <- file.path(output_dir_convplots, paste0(draw_name, "_density.tiff"))
+  ggsave(filename = plot_filename_t, plot = trace_plot, device = "tiff", width = plot_width, height = plot_height, dpi = 300)
+  ggsave(filename = plot_filename_d, plot = density_plot, device = "tiff", width = plot_width, height = plot_height, dpi = 300)
+  # Display the plots
+  print(trace_plot)
+  print(density_plot)
+}
+
+
+```
+
+
+```{r}
+x = fit_dd$loo(variables = "logLikelihood", cores = 3)
+x
+pareto_k_table(x)
+pareto_k_values(x)
+
+plot(
+  x,
+  diagnostic = c("k", "n_eff"),
+  label_points = FALSE,
+  main = "PSIS diagnostic plot"
+)
+estimates = data.frame(x$estimates)
+write_csv(estimates, "~/Phd material/qAOP_framework/loo_output_model1.csv")
+```
+
+
+
+```{r}
+#Plot the fit 
+conflict_prefer("filter","dplyr")
+
+finish <- seq(1, 100, by = 0.1) 
+dose = 1
+variable = "MIE"
+#S1 = 0.5
+#S2 = 1
+data = get(paste0("data",dose,"_stan"))%>%filter(StateVar == variable)
+
+plot(x=data$time,y=data$mean,type="p", pch=19, ylab=paste0(variable), xlab="Time",xlim=c(0,100),ylim=c(-0.2,0.7))
+
+arrows(data$time, data$mean- data$sd, data$time, data$mean+data$sd, length=0, angle=90, code=3, lty=2, lwd=0.8)
+
+for(i in 1:100){
+  
+  k = sample(1:nrow(draws_dd),1)
+  
+  pars = c(tau = draws_dd[[k,"tau"]],
+           k_KE1 = draws_dd[[k,"k_1"]],
+           d1 = draws_dd[[k,"deg_1"]],
+           k_12 = draws_dd[[k,"k_12"]],
+           d2 = draws_dd[[k,"deg_2"]]
+           )
+  
+  inistate = c(MIE = draws_dd[[k,"S0"]], KE1 = 0, KE2 = 0)
+  out = ode(y=inistate, times=finish, func=qAOPB, parms=pars)
+  
+
+  lines(data.frame(out)%>% select(time,all_of(variable)),main="", ylab="x", col = alpha("blue",0.1),lty=1)
+  
+  }
+
+```
+#RUN MODEL 2
+```{r}
+
+
+options(mc.cores = parallel::detectCores())  # Use all available cores
+#, stanc.allow_optimizations = TRUE, stanc.auto_format = TRUE
+chains <- 4 # Number of chains
+iter <- 10000  # Number of iterations
+warmup <- 6000 # Number of warmup iterations
+thin <- 1  # Thinning parameter
+
+compiled_model <- cmdstan_model("/home/ditilliof/Stan_models/DDmodel2.stan") #modify according to you file path
+
+# This is for cmdstanr
+fit_dd <- compiled_model$sample(data = data_list, 
+                    parallel_chains = getOption("mc.cores", 1), 
+                    chains=chains,
+                    iter_warmup = warmup, 
+                    iter_sampling = iter-warmup,
+                    #show_messages = FALSE,
+                    refresh = 1,
+                    #seed = 123456789
+                    )
+
+```
+
+```{r}
+
+(fit_dd_trace <- mcmc_trace(fit_dd$draws(format="df",variables =                                             c("tau","k_1","deg_1","k_12","deg_2","k_2","S0"))))
+                                                                                          
+(fit_dd_density <- mcmc_dens_overlay(fit_dd$draws(format="df",variables = c("tau","k_1","deg_1","k_12","deg_2","k_2","S0"))))
+draws_dd <- fit_dd$draws(format = "draws_matrix",variables = c("tau","k_1","deg_1","k_12","deg_2","k_2","S0"))
+(fit_dd_summary <- fit_dd$summary())
+
+wtf = fit_dd$draws(format = "draws_matrix",variables = 'logLikelihood')
+draws_complete = fit_dd$draws(format = "draws_matrix")
+
+
+
+sumPardd<-data.frame(fit_dd_summary) %>% column_to_rownames("variable") 
+
+parSetsdd<- draws_dd
+#fit_dd$init_model_methods()
+write_csv(data.frame(fit_dd_summary), "~/Phd material/qAOP_framework/parameter_summary_model2.csv")
+write_csv(data.frame(draws_complete), "~/Phd material/qAOP_framework/draws_model2.csv")
+```
+
+```{r}
+x = fit_dd$loo(variables = "logLikelihood", cores = 3)
+x
+pareto_k_table(x)
+pareto_k_values(x)
+
+plot(
+  x,
+  diagnostic = c("k", "n_eff"),
+  label_points = FALSE,
+  main = "PSIS diagnostic plot"
+)
+
+write_csv(data.frame(x$estimates), "~/Phd material/qAOP_framework/loo_output_model2.csv")
+```
+
+
+```{r}
+#Plot the fit 
+conflict_prefer("filter","dplyr")
+
+finish <- seq(1, 100, by = 0.1) 
+dose = 1
+variable = "KE2"
+#S1 = 0.5
+#S2 = 1
+data = get(paste0("data",dose,"_stan"))%>%filter(StateVar == variable)
+
+plot(x=data$time,y=data$mean,type="p", pch=19, ylab=paste0(variable), xlab="Time",xlim=c(0,100),ylim=c(-0.1,2.3))
+
+arrows(data$time, data$mean- data$sd, data$time, data$mean+data$sd, length=0, angle=90, code=3, lty=2, lwd=0.8)
+
+for(i in 1:100){
+  
+  k = sample(1:nrow(draws_dd),1)
+  
+  pars = c(tau = draws_dd[[k,"tau"]],
+           k_KE1 = draws_dd[[k,"k_1"]],
+           d1 = draws_dd[[k,"deg_1"]],
+           k_12 = draws_dd[[k,"k_12"]],
+           d2 = draws_dd[[k,"deg_2"]],
+           k_KE2 = draws_dd[[k,"k_2"]]
+           )
+  
+  inistate = c(MIE = draws_dd[[k,"S0"]], KE1 = 0, KE2 = 0)
+  out = ode(y=inistate, times=finish, func=qAOPA, parms=pars)
+  
+
+  lines(data.frame(out)%>% select(time,all_of(variable)),main="", ylab="x", col = alpha("blue",0.1),lty=1)
+  
+  }
+
+```
+
+#generate fakedata through qAOPC
+```{r}
+qAOPC = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dMIE = -tau*MIE
+       dKE1 = k_KE1 + MIE - d1 * KE1
+       dKE2 = k_12 * KE1 - d2 * KE2 + k_KE2/(h2 + MIE)
+       
+       list(c(dMIE, dKE1, dKE2))
+})
+}
+
+#Here I choose two different initial states (corresponding to two different dose levels) and I calculate the solutions of the system corresponding to those initial states
+
+inistate1 = c(MIE=0.5, KE1 = 0, KE2 = 0)
+inistate2 = c(MIE=1, KE1 = 0, KE2 = 0)
+finish = seq(0, 100, by = 0.1)
+pars = c(tau=0.05, k_KE1 = 0.2, d1 = 0.5, k_12 = 0.3, d2 = 0.4, k_KE2 = 0.2, h2=0.3) #k_KE2 = 0.05 in low case
+out1 = as.data.frame(ode(inistate1, finish, func = qAOPC, pars))
+out2 = as.data.frame(ode(inistate2, finish, func = qAOPC, pars))
+
+ggplot() + theme_bw() +
+  geom_line(data = out1, aes(x=time, y=KE1, color = "KE1")) + 
+  geom_line(data = out1, aes(x=time, y=MIE, color = "MIE")) +
+  geom_line(data = out1, aes(x=time, y=KE2, color = "KE2")) +
+  labs(title = "ODE Model", x="Time", y = "", color= "Variable") 
+  #scale_color_manual(values = c("blue", "red", "green"), labels = c("MIE", "KE1","KE2"))
+```
+
+
+```{r}
+#plot for the second dose level
+ggplot() + theme_bw() +
+  geom_line(data = out2, aes(x=time, y=KE1, color = "KE1")) + 
+  geom_line(data = out2, aes(x=time, y=MIE, color = "MIE")) +
+  labs(title = "ODE Model", x="Time", y = "", color= "Variable") +
+  scale_color_manual(values = c("blue", "red"), labels = c("MIE", "KE1"))
+```
+
+```{r}
+#We now generate fake data from the model by adding noise to the solutions of the system.
+finish <- seq(1, 100, by = 5)  # assume we have data on 11 time points
+out1 <- as.data.frame(ode(inistate1, finish, func = qAOPC, parms = pars))
+out2 <- as.data.frame(ode(inistate2, finish, func = qAOPC, parms = pars))  # calculate solutions again
+nrep <- 5  # number of fake replicates
+std <- 0.3  # set standard deviation to add noise to the solution
+
+fakedata1 <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
+fakedata2 <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE1 = numeric(), REPLICATE = numeric())
+
+for (i in 1:length(finish)) {
+  for (j in 1:nrep) {
+    fakedata1 <- rbind(fakedata1, data.frame(time = finish[i], MIE = out1$MIE[i] + rnorm(1, mean = 0, sd = std),
+                                             KE1 = out1$KE1[i] + rnorm(1, mean = 0, sd = std), 
+                                             KE2 = out1$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
+    fakedata2 <- rbind(fakedata2, data.frame(time = finish[i], MIE = out2$MIE[i] + rnorm(1, mean = 0, sd = std),
+                                             KE1 = out2$KE1[i] + rnorm(1, mean = 0, sd = std),
+                                             KE2 = out2$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
+  }
+}
+variable = "KE2"
+ggplot() + theme_bw() +
+  geom_point(data = fakedata1, aes(time, get(variable), color = as.factor(REPLICATE))) + 
+  labs(x = "Time", y = variable, color = "Replicate number")
+
+write.csv(fakedata1, "~/Phd material/qAOP_framework/model_comparison/fakedata_qAOPC.csv")
+```
+```{r}
+conflict_prefer("sd", "stats")
+#redefine the data in terms of mean and sd
+data1_stan = fakedata1 %>% 
+  pivot_longer(!c(time,REPLICATE), names_to = "StateVar", values_to = "value") %>%
+  group_by(time,StateVar) %>%
+  summarise(mean = mean(value), sd = sd(value)) %>%
+  ungroup()
+
+data2_stan = fakedata2 %>% 
+  pivot_longer(!c(time,REPLICATE), names_to = "StateVar", values_to = "value") %>%
+  group_by(time,StateVar) %>%
+  summarise(mean = mean(value), sd = sd(value)) %>%
+  ungroup()
+
+#define the input data for the cmdrstan run (the variables need to coincide with what we have defined in the "data" block of the Stan file)
+data_list=list(
+N = length(unique(fakedata1$time)),
+t0 = 0,
+ts = unique(fakedata1$time), #does not have to include t0
+y_dose1 = as.matrix(data1_stan %>% select(-sd)%>%
+                      group_by(time) %>%
+  pivot_wider(names_from = StateVar, values_from = mean) %>%
+    ungroup()%>%select(-time))[,c(3,1,2)],
+# y_dose2 = as.matrix(data2_stan %>% select(-sd)%>%
+#                       group_by(time) %>%
+#   pivot_wider(names_from = StateVar, values_from = mean) %>%
+#     ungroup()%>%select(-time))[,c(2,1)],
+sigma_dose1 = as.matrix(data1_stan %>% select(-mean)%>%
+                      group_by(time) %>%
+  pivot_wider(names_from = StateVar, values_from = sd) %>%
+    ungroup()%>%select(-time))[,c(3,1,2)],
+# sigma_dose2 = as.matrix(data2_stan %>% select(-mean)%>%
+#                       group_by(time) %>%
+#   pivot_wider(names_from = StateVar, values_from = sd) %>%
+#     ungroup()%>%select(-time))[,c(2,1)],
+KE10 = 0,
+KE20 = 0
+)
+```
+
+#RUN MODEL 3
+```{r}
+
+
+options(mc.cores = parallel::detectCores())  # Use all available cores
+#, stanc.allow_optimizations = TRUE, stanc.auto_format = TRUE
+chains <- 4 # Number of chains
+iter <- 5000  # Number of iterations
+warmup <- 3000 # Number of warmup iterations
+thin <- 1  # Thinning parameter
+
+compiled_model <- cmdstan_model("/home/ditilliof/Stan_models/DDmodel3.stan") #modify according to you file path
+
+# This is for cmdstanr
+fit_dd <- compiled_model$sample(data = data_list, 
+                    parallel_chains = getOption("mc.cores", 1), 
+                    chains=chains,
+                    iter_warmup = warmup, 
+                    iter_sampling = iter-warmup,
+                    #show_messages = FALSE,
+                    refresh = 1,
+                    #seed = 123456789
+                    )
+
+```
+
+```{r}
+
+(fit_dd_trace <- mcmc_trace(fit_dd$draws(format="df",variables =                                             c("tau","k_1","deg_1","k_12","deg_2","k_2","h_2","S0"))))
+                                                                                          
+(fit_dd_density <- mcmc_dens_overlay(fit_dd$draws(format="df",variables = c("tau","k_1","deg_1","k_12","deg_2","k_2","h_2","S0"))))
+draws_dd <- fit_dd$draws(format = "draws_matrix",variables = c("tau","k_1","deg_1","k_12","deg_2","k_2","h_2","S0"))
+(fit_dd_summary <- fit_dd$summary())
+
+wtf = fit_dd$draws(format = "draws_matrix",variables = 'logLikelihood')
+draws_complete = fit_dd$draws(format = "draws_matrix")
+
+
+
+sumPardd<-data.frame(fit_dd_summary) %>% column_to_rownames("variable") 
+
+parSetsdd<- draws_dd
+#fit_dd$init_model_methods()
+write_csv(data.frame(fit_dd_summary), "~/Phd material/qAOP_framework/parameter_summary_model3.csv")
+write_csv(data.frame(draws_complete), "~/Phd material/qAOP_framework/draws_model3.csv")
+```
+
+```{r}
+x = fit_dd$loo(variables = "logLikelihood", cores = 3)
+x
+pareto_k_table(x)
+pareto_k_values(x)
+
+# plot(
+#   x,
+#   diagnostic = c("k", "n_eff"),
+#   label_points = FALSE,
+#   main = "PSIS diagnostic plot"
+# )
+
+write_csv(data.frame(x$estimates), "~/Phd material/qAOP_framework/loo_output_model3.csv")
+```
+```{r}
+#Plot the fit 
+conflict_prefer("filter","dplyr")
+
+finish <- seq(1, 100, by = 0.1) 
+dose = 1
+variable = "MIE"
+#S1 = 0.5
+#S2 = 1
+data = get(paste0("data",dose,"_stan"))%>%filter(StateVar == variable)
+
+plot(x=data$time,y=data$mean,type="p", pch=19, ylab=paste0(variable), xlab="Time",xlim=c(0,100),ylim=c(-0.5,1.2))
+
+arrows(data$time, data$mean- data$sd, data$time, data$mean+data$sd, length=0, angle=90, code=3, lty=2, lwd=0.8)
+
+for(i in 1:100){
+  
+  k = sample(1:nrow(draws_dd),1)
+  
+  pars = c(tau = draws_dd[[k,"tau"]],
+           k_KE1 = draws_dd[[k,"k_1"]],
+           d1 = draws_dd[[k,"deg_1"]],
+           k_12 = draws_dd[[k,"k_12"]],
+           d2 = draws_dd[[k,"deg_2"]],
+           k_KE2 = draws_dd[[k,"k_2"]],
+           h2 = draws_dd[[k,"h_2"]]
+           )
+  
+  inistate = c(MIE = draws_dd[[k,"S0"]], KE1 = 0, KE2 = 0)
+  out = ode(y=inistate, times=finish, func=qAOPC, parms=pars)
+  
+
+  lines(data.frame(out)%>% select(time,all_of(variable)),main="", ylab="x", col = alpha("blue",0.1),lty=1)
+  
+  }
+
+```
+#RUN MODEL 1
+```{r}
+
+
+options(mc.cores = parallel::detectCores())  # Use all available cores
+#, stanc.allow_optimizations = TRUE, stanc.auto_format = TRUE
+chains <- 4 # Number of chains
+iter <- 5000  # Number of iterations
+warmup <- 3000 # Number of warmup iterations
+thin <- 1  # Thinning parameter
+
+compiled_model <- cmdstan_model("/home/ditilliof/Stan_models/DDmodel.stan") #modify according to you file path
+
+# This is for cmdstanr
+fit_dd <- compiled_model$sample(data = data_list, 
+                    parallel_chains = getOption("mc.cores", 1), 
+                    chains=chains,
+                    iter_warmup = warmup, 
+                    iter_sampling = iter-warmup,
+                    #show_messages = FALSE,
+                    refresh = 1,
+                    #seed = 123456789
+                    )
+
+```
+
+```{r}
+
+(fit_dd_trace <- mcmc_trace(fit_dd$draws(format="df",variables =                                             c("tau","k_1","deg_1","k_12","deg_2","S0"))))
+                                                                                          
+(fit_dd_density <- mcmc_dens_overlay(fit_dd$draws(format="df",variables = c("tau","k_1","deg_1","k_12","deg_2","S0"))))
+draws_dd <- fit_dd$draws(format = "draws_matrix",variables = c("tau","k_1","deg_1","k_12","deg_2","S0"))
+(fit_dd_summary <- fit_dd$summary())
+
+wtf = fit_dd$draws(format = "draws_matrix",variables = 'logLikelihood')
+draws_complete = fit_dd$draws(format = "draws_matrix")
+
+
+
+sumPardd<-data.frame(fit_dd_summary) %>% column_to_rownames("variable") 
+
+parSetsdd<- draws_dd
+#fit_dd$init_model_methods()
+write_csv(data.frame(fit_dd_summary), "~/Phd material/qAOP_framework/parameter_summary_model1.csv")
+write_csv(data.frame(draws_complete), "~/Phd material/qAOP_framework/draws_model1.csv")
+```
+```{r}
+x = fit_dd$loo(variables = "logLikelihood", cores = 3)
+x
+pareto_k_table(x)
+pareto_k_values(x)
+
+# plot(
+#   x,
+#   diagnostic = c("k", "n_eff"),
+#   label_points = FALSE,
+#   main = "PSIS diagnostic plot"
+# )
+
+write_csv(data.frame(x$estimates), "~/Phd material/qAOP_framework/loo_output_model1.csv")
+```
+```{r}
+#Plot the fit 
+conflict_prefer("filter","dplyr")
+
+finish <- seq(1, 100, by = 0.1) 
+dose = 1
+variable = "MIE"
+#S1 = 0.5
+#S2 = 1
+data = get(paste0("data",dose,"_stan"))%>%filter(StateVar == variable)
+
+plot(x=data$time,y=data$mean,type="p", pch=19, ylab=paste0(variable), xlab="Time",xlim=c(0,100),ylim=c(-0.5,1.2))
+
+arrows(data$time, data$mean- data$sd, data$time, data$mean+data$sd, length=0, angle=90, code=3, lty=2, lwd=0.8)
+
+for(i in 1:100){
+  
+  k = sample(1:nrow(draws_dd),1)
+  
+  pars = c(tau = draws_dd[[k,"tau"]],
+           k_KE1 = draws_dd[[k,"k_1"]],
+           d1 = draws_dd[[k,"deg_1"]],
+           k_12 = draws_dd[[k,"k_12"]],
+           d2 = draws_dd[[k,"deg_2"]]
+           )
+  
+  inistate = c(MIE = draws_dd[[k,"S0"]], KE1 = 0, KE2 = 0)
+  out = ode(y=inistate, times=finish, func=qAOPB, parms=pars)
+  
+
+  lines(data.frame(out)%>% select(time,all_of(variable)),main="", ylab="x", col = alpha("blue",0.1),lty=1)
+  
+  }
+
+```

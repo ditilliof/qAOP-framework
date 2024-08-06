@@ -1,0 +1,12 @@
+# Ignore R data files
+*.Rdata
+*.rds
+
+# Ignore large data files
+data/
+
+# Ignore system files
+.DS_Store
+
+# Ignore RStudio project files
+.Rproj.user

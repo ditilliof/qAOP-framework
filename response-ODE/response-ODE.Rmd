@@ -1,0 +1,183 @@
+---
+title: "response-ODE"
+author: "me"
+date: "2024-02-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, cmdstanr, posterior, bayesplot, deSolve, R.utils, conflicted, loo, RColorBrewer)
+
+output_folder = "~/Phd material/qAOP_framework/response-ODE"
+```
+
+
+```{r}
+qAOP = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dMIE = -tau*MIE
+       dKE1 = MIE/(h1_MIE + MIE) - deg_KE1 * KE1
+       dKE2 = k_12 * KE1^2/(h_12 + KE1^2) + i_MIE/(h2_MIE + MIE) - deg_KE2 * KE2
+       
+       list(c(dMIE, dKE1, dKE2))
+})
+}
+
+#Here I choose two different initial states (corresponding to two different dose levels) and I calculate the solutions of the system corresponding to those initial states
+
+inistate = c(MIE=1, KE1 = 0, KE2 = 2)
+
+finish = seq(0, 50, by = 0.1)
+pars = c(tau=0.1, h1_MIE = 5, deg_KE1 = 0.1, k_12 = 0.3, h_12 = 10, i_MIE = 0.9, h2_MIE = 2, deg_KE2 = 0.3)
+out = as.data.frame(ode(inistate, finish, func = qAOP, pars))
+
+
+plot = ggplot() + theme_classic() +
+  geom_line(data = out, aes(x = time, y = KE1, color = "KE1"), size = 1.5) + 
+  geom_line(data = out, aes(x = time, y = MIE, color = "MIE"), size = 1.5) +
+  geom_line(data = out, aes(x = time, y = KE2, color = "KE2"), size = 1.5) +
+  labs(x = "Time (a.u.)", y = "MIE or KE activity (a.u.)", color = "Variable")  +
+  theme(
+    axis.title = element_text(size = 30),  
+    axis.text = element_text(size = 24),   
+    legend.title = element_text(size = 24), 
+    legend.text = element_text(size = 24),  
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )
+
+print(plot)
+
+tiff(paste0(output_folder,"/ODEmodel", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(plot)
+dev.off()
+
+
+```
+```{r}
+doses = seq(0, 100, by=0.1)
+KE1_10 = rep(0, length(doses))
+KE2_10 = rep(0, length(doses))
+KE1_30 = rep(0, length(doses))
+KE2_30 = rep(0, length(doses))
+KE1_50 = rep(0, length(doses))
+KE2_50 = rep(0, length(doses))
+
+
+for (i in seq_along(doses)) {
+  inistate <- c(MIE = doses[i], KE1 = 0, KE2 = 2)
+  out <- as.data.frame(ode(y = inistate, times = finish, func = qAOP, parms = pars))
+  KE1_10[i] <- out[out$time == 10, 'KE1']
+  KE2_10[i] <- out[out$time == 10, 'KE2']
+  KE1_30[i] <- out[out$time == 30, 'KE1']
+  KE2_30[i] <- out[out$time == 30, 'KE2']
+  KE1_50[i] <- out[out$time == 50, 'KE1']
+  KE2_50[i] <- out[out$time == 50, 'KE2']
+}
+
+KE1_10 = data.frame(doses, "KE" = KE1_10)
+KE2_10 = data.frame(doses, "KE" = KE2_10)
+KE1_30 = data.frame(doses, "KE" = KE1_30)
+KE2_30 = data.frame(doses, "KE" = KE2_30)
+KE1_50 = data.frame(doses, "KE" = KE1_50)
+KE2_50 = data.frame(doses, "KE" = KE2_50)
+```
+
+
+```{r}
+plot_dr = function(KE_t){
+  plot = ggplot() + theme_classic() +
+    geom_line(data = KE_t, aes(doses,KE))
+  return(plot)
+}
+
+plot_dr(KE1_10)
+plot_dr(KE2_10)
+plot_dr(KE1_30)
+plot_dr(KE2_30)
+plot_dr(KE1_50)
+plot_dr(KE2_50)
+
+plot = ggplot() + 
+  theme_classic() +
+  geom_line(data = KE1_10, aes(x = doses, y = KE, color = "KE1, t = 10"), linetype = 'solid', size = 1.5) +
+  geom_line(data = KE2_10, aes(x = doses, y = KE, color = "KE2, t = 10"), linetype = 'solid', size = 1.5) +
+  geom_line(data = KE1_30, aes(x = doses, y = KE, color = "KE1, t = 30"), linetype = 'solid', size = 1.5) +
+  geom_line(data = KE2_30, aes(x = doses, y = KE, color = "KE2, t = 30"), linetype = 'solid', size = 1.5) +
+  geom_line(data = KE1_50, aes(x = doses, y = KE, color = "KE1, t = 50"), linetype = 'solid', size = 1.5) +
+  geom_line(data = KE2_50, aes(x = doses, y = KE, color = "KE2, t = 50"), linetype = 'solid', size = 1.5) +
+  scale_color_manual(name = "Variable, timepoint", 
+                     values = c("KE1, t = 10" = "#1b9e77", "KE2, t = 10" = "#d95f02", 
+                                "KE1, t = 30" = "#7570b3", "KE2, t = 30" = "#e7298a", 
+                                "KE1, t = 50" = "#66a61e", "KE2, t = 50" = "#e6ab02"))  +
+  labs(x = "Time (a.u.)", y = "KE (a.u.)") + 
+  theme(
+    axis.title = element_text(size = 30),  
+    axis.text = element_text(size = 24),   
+    legend.title = element_text(size = 24), 
+    legend.text = element_text(size = 24),  
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )
+
+print(plot)
+
+tiff(paste0(output_folder,"/doseresponse", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(plot)
+dev.off()
+
+```
+```{r}
+plot_rr = function(df){
+  plot = ggplot() + theme_classic() +
+    geom_line(data = df, aes(KE1,KE2))
+  return(plot)
+}
+
+rr_10 = data.frame(doses, "KE1" = KE1_10$KE, "KE2" = KE2_10$KE)
+rr_30 = data.frame(doses, "KE1" = KE1_30$KE, "KE2" = KE2_30$KE)
+rr_50 = data.frame(doses, "KE1" = KE1_50$KE, "KE2" = KE2_50$KE)
+
+plot_rr(rr_10)
+plot_rr(rr_30)
+plot_rr(rr_50)
+  
+plot = ggplot() + 
+  theme_classic() +
+  geom_line(data = rr_10, aes(x = KE1, y = KE2, color = "t = 10"), linetype = 'solid', size = 1.5) +
+  geom_line(data = rr_30, aes(x = KE1, y = KE2, color = "t = 30"), linetype = 'solid', size = 1.5) +
+  geom_line(data = rr_50, aes(x = KE1, y = KE2, color = "t = 50"), linetype = 'solid', size = 1.5) +
+  scale_color_manual(name = "Timepoint", 
+                     values = c("t = 10" = "#e41a1c", "t = 30" = "#377eb8", "t = 50" = "#4daf4a"))  +
+  labs(x = "KE1 (a.u.)", y = "KE2 (a.u.)") +
+  theme(
+    axis.title = element_text(size = 30),  
+    axis.text = element_text(size = 24),   
+    legend.title = element_text(size = 24), 
+    legend.text = element_text(size = 24),  
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )
+
+print(plot)
+
+tiff(paste0(output_folder,"/responseresponse", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(plot)
+dev.off()
+
+```
+

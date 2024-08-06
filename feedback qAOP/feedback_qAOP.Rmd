@@ -1,0 +1,243 @@
+---
+title: "feedback qAOP"
+author: "me"
+date: "2024-02-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, cmdstanr, posterior, bayesplot, deSolve, R.utils, conflicted, loo, deBif, rootSolve, FME, coda)
+
+output_folder = "~/Phd material/qAOP_framework/feedback qAOP"
+
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+conflict_prefer("match", "base")
+# feedbackqAOP = function(timepoint, state, parameters){
+#   with(as.list(c(state, parameters)),{
+#        dMIE = -tau*MIE
+#        dKE1 = s1*MIE*KE2 - deg_KE1 * KE1 + eps
+#        dKE2 = s2 * KE1 - deg_KE2 * KE2 + eps
+#        
+#        list(c(dMIE, dKE1, dKE2))
+# })
+# }
+feedbackqAOP = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dKE1 = k*KE2 - deg_KE1 * KE1 + eps
+       dKE2 = s2 * KE1^m/(k1^m + KE1^m) - deg_KE2 * KE2 + eps
+       
+       list(c(dKE1, dKE2))
+})
+}
+#
+source('/home/ditilliof/Phd material/qAOP_framework/feedback qAOP/grindnew.R')
+inistate = c(KE1 = 1, KE2 = 1)
+finish = seq(0, 100, by = 0.1)
+pars = c(k=0.4, deg_KE1 = 1, s2 = 4,  deg_KE2 = 1, eps = 0.2, m = 3, k1 = 1)
+out = as.data.frame(ode(inistate, finish, func = feedbackqAOP, pars))
+eq <- newton()
+continue(eq,x="k",y="KE2",xmax=1,ymax=5)
+
+plot <- recordPlot()
+
+```
+
+
+
+
+```{r}
+tiff(paste0(output_folder,"/1B", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(plot)
+  dev.off()
+
+```
+```{r}
+source('/home/ditilliof/Phd material/qAOP_framework/feedback qAOP/grindggplot.R')
+inistate <- c(KE1 = 1, KE2 = 1)
+finish <- seq(0, 100, by = 0.1)
+pars <- c(k = 0.4, deg_KE1 = 1, s2 = 4, deg_KE2 = 1, eps = 0.2, m = 3, k1 = 1)
+out <- as.data.frame(ode(inistate, finish, func = feedbackqAOP, pars ))
+
+eq <- newton()
+bifurcation_data <- continue(eq, x = "k", y = "KE2", xmax = 1, ymax = 5)
+
+
+# Plot using ggplot2
+ggplot(bifurcation_data, aes(x = x, y = y, color = stable)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("red", "blue"), labels = c("Unstable", "Stable")) +
+  labs(x = "k", y = "KE2 (a.u.)") +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 16),
+    axis.title = element_text(size = 20),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 16)
+  )
+
+
+```
+
+
+```{r}
+ggplot() + 
+  theme_bw() + 
+  geom_line(data = out, aes(x = time, y = KE1, color = "KE1"), show.legend = TRUE) +
+  geom_line(data = out, aes(x = time, y = KE2, color = "KE2"), show.legend = TRUE) +
+  labs(title = "ODE Model", x = "Time", y = "", color = "Variable") +
+  scale_color_manual(values = c("#7570b3", "#e7298a"), labels = c("KE1", "KE2"))
+
+```
+#1C
+```{r}
+# Debugging and adjustments for annotation display
+p <- ggplot() + theme_classic()
+
+doses = seq(0, 2, by = 0.1)
+inistate = c(KE1 = 0, KE2 = 0)
+finish = seq(0, 75, by = 0.001)
+
+# Select specific values of k for annotation
+annotate_values = c(0.1, 0.5, 1)
+annotations <- data.frame(k = annotate_values, x = NA, y = NA)
+
+for(mie in doses){
+  pars = c(k = mie , deg_KE1 = 1, s2 = 4,  deg_KE2 = 1, eps = 0.2, m = 3, k1 = 1)
+  out = as.data.frame(ode(inistate, finish, func = feedbackqAOP, pars))
+  
+  p = p + geom_line(data = out, aes(x = time, y = KE2, color = "KE2"), show.legend = FALSE, size = 1)
+  
+  # Annotate specific values of k
+  if(mie %in% annotate_values){
+    annotations[annotations$k == mie, "x"] <- max(out$time)
+    annotations[annotations$k == mie, "y"] <- tail(out$KE2, n = 1) + 0.1
+  }
+}
+
+print(annotations)  # Debugging print statement
+
+for(i in 1:nrow(annotations)){
+  p = p + annotate("text", x = annotations$x[i], y = annotations$y[i], 
+                   label = paste0("k=", round(annotations$k[i], 1)), hjust = 1, vjust = 0, size = 6)
+}
+
+p = p + labs(x = "Time (a.u.)", y = "") +
+  theme(axis.text = element_text(size = 24), axis.title = element_text(size = 30),  # Increased sizes
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.border = element_blank(), axis.line = element_line(color = "black"))
+
+tiff(paste0(output_folder,"/tcKE2_multMIE", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(p)
+dev.off()
+p
+```
+#1D
+```{r}
+p <- ggplot() + theme_classic()
+
+d1_values = seq(0, 2, by = 0.1)
+inistate = c(KE1 = 0, KE2 = 0)
+finish = seq(0, 75, by = 0.001)
+
+# Select specific values of d1 for annotation
+annotate_values = c(0.5, 2)
+annotations <- data.frame(d1 = annotate_values, x = NA, y = NA)
+
+for(d1 in d1_values){
+  pars = c(k = 0.4 , deg_KE1 = d1, s2 = 4,  deg_KE2 = 1, eps = 0.2, m = 3, k1 = 1)
+  out = as.data.frame(ode(inistate, finish, func = feedbackqAOP, pars))
+  
+  p = p + geom_line(data = out, aes(x = time, y = KE2, color = "KE2"), show.legend = FALSE, size = 1)
+  
+  # Annotate specific values of d1
+  if(d1 %in% annotate_values){
+    annotations[annotations$d1 == d1, "x"] <- max(out$time)
+    annotations[annotations$d1 == d1, "y"] <- tail(out$KE2, n = 1) + 0.1
+  }
+}
+
+for(i in 1:nrow(annotations)){
+  p = p + annotate("text", x = annotations$x[i], y = annotations$y[i], 
+                   label = paste0("d1=", round(annotations$d1[i], 1)), hjust = 1, vjust = 0, size = 5.5)
+}
+
+p = p + labs(x = "Time (a.u.)", y = "") +
+  theme(axis.text = element_text(size = 24), axis.title = element_text(size = 30),  # Increased sizes
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.border = element_blank(), axis.line = element_line(color = "black"))
+
+tiff(paste0(output_folder,"/tcKE2_multd1", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(p)
+dev.off()
+p
+
+```
+#Bifurcation plots
+```{r}
+#DEFINE FUNCTION TO GET BIFURCARION POINTS
+determine_BP <- function(df, xvar, yvar, res = "y") {
+  sf <- splinefun(df[[yvar]], df[[xvar]], method = "natural", ties = mean)
+  roots <- rootSolve::uniroot.all(sf, interval = c(min(df[[yvar]]), max(df[[yvar]])), deriv = 1)
+  if(res == "y") return(roots)
+  else if(res == "x") return(sf(roots))
+  else stop("invalid option for res")
+}
+
+bif_data = read_delim(paste0(output_folder, "/bifurcation data/posbif2AOP.txt"))[,1:2] %>%
+  drop_na() %>% unique()
+zoom1 = read_delim(paste0(output_folder, "/bifurcation data/zoomedbif.txt"))[,1:2] %>%
+  drop_na() %>% unique()
+zoom2 = read_delim(paste0(output_folder, "/bifurcation data/zoomed2.txt"))[,1:2] %>%
+  drop_na() %>% unique()
+
+bif_data = bind_rows(bif_data, zoom1, zoom2)
+
+names(bif_data)[1] <- 'MIE'
+names(bif_data)[2] <- 'KE2'
+
+bifpoints <- determine_BP(bif_data, xvar="MIE", yvar="KE2", res = "y")
+bif_data_low <- bif_data %>% filter(KE2<=bifpoints[1])
+bif_data_up <- bif_data %>% filter(KE2>bifpoints[2])
+bif_data_mid <- setdiff(setdiff(bif_data, bif_data_low), bif_data_up)
+plot(1, xlab="MIE", ylab="KE2", type="n", xlim=c(0,0.30), ylim=c(0, 4.1))
+lines(bif_data_low$MIE, bif_data_low$KE2,col="red")
+lines(bif_data_up$MIE, bif_data_up$KE2, col="red")
+lines(bif_data_mid$MIE, bif_data_mid$KE2, col="black")
+abline( v=0.23125, lty=2)
+abline( v=0.083, lty=2)
+text(0.05, 0.4, 'stable')
+text(0.15,4, 'stable')
+text(0.15,1.2,'unstable')
+```
+
+```{r}
+conflict_prefer("match", "base")
+model <- function(t, state, parms) {
+  with(as.list(c(state,parms)), {
+  R = 1/(1+A^n)               # Repressor
+  dA = M*L - delta*A - v*M*A  # Allolactose
+  dM = c0 + c*(1-R) - d*M     # mRNA
+  return(list(c(dA, dM)))  
+  }) 
+}
+
+p <- c(L=1,c=1,c0=0.05,d=1,delta=0.2,n=5,v=0.25)
+s <- c(A=0,M=0)
+plane(xmax=4)
+low <- newton(s,plot=T)
+mid <- newton(c(A=0.8,M=0.2),plot=T)
+hig <- newton(c(A=2,M=1),plot=T)
+continue(mid,x="L",y="A",xmax=2,ymax=4)
+
+```
+
