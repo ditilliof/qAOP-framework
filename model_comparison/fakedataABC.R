@@ -6,7 +6,7 @@ conflict_prefer("filter", "dplyr")
 
 # Create a timestamped folder
 timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-output_folder <- paste0("~/Phd material/qAOP_framework/model_comparison/", timestamp)
+output_folder <- paste0("./model_comparison/", timestamp)
 dir.create(output_folder, recursive = TRUE)
 
 # Define initial states and parameters

@@ -1,0 +1,151 @@
+---
+title: "feedback qAOP"
+author: "me"
+date: "2024-02-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, cmdstanr, posterior, bayesplot, deSolve, R.utils, conflicted, loo, deBif, rootSolve, FME, coda)
+
+output_folder = "."
+
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+conflict_prefer("match", "base")
+
+feedbackqAOP = function(timepoint, state, parameters){
+  with(as.list(c(state, parameters)),{
+       dKE1 = k*KE2 - deg_KE1 * KE1 + eps
+       dKE2 = s2 * KE1^m/(k1^m + KE1^m) - deg_KE2 * KE2 + eps
+       
+       list(c(dKE1, dKE2))
+})
+}
+
+source('./grindnew.R')
+inistate = c(KE1 = 1, KE2 = 1)
+finish = seq(0, 100, by = 0.1)
+pars = c(k=0.4, deg_KE1 = 1, s2 = 4,  deg_KE2 = 1, eps = 0.2, m = 3, k1 = 1)
+out = as.data.frame(ode(inistate, finish, func = feedbackqAOP, pars))
+eq <- newton()
+continue(eq,x="k",y="KE2",xmax=1,ymax=5)
+
+plot <- recordPlot()
+
+```
+
+
+
+
+```{r}
+tiff(paste0(output_folder,"/1B", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(plot)
+  dev.off()
+
+```
+
+
+
+```{r}
+ggplot() + 
+  theme_bw() + 
+  geom_line(data = out, aes(x = time, y = KE1, color = "KE1"), show.legend = TRUE) +
+  geom_line(data = out, aes(x = time, y = KE2, color = "KE2"), show.legend = TRUE) +
+  labs(title = "ODE Model", x = "Time", y = "", color = "Variable") +
+  scale_color_manual(values = c("#7570b3", "#e7298a"), labels = c("KE1", "KE2"))
+
+```
+#1C
+```{r}
+# Debugging and adjustments for annotation display
+p <- ggplot() + theme_classic()
+
+doses = seq(0, 2, by = 0.1)
+inistate = c(KE1 = 0, KE2 = 0)
+finish = seq(0, 75, by = 0.001)
+
+# Select specific values of k for annotation
+annotate_values = c(0.1, 0.5, 1)
+annotations <- data.frame(k = annotate_values, x = NA, y = NA)
+
+for(mie in doses){
+  pars = c(k = mie , deg_KE1 = 1, s2 = 4,  deg_KE2 = 1, eps = 0.2, m = 3, k1 = 1)
+  out = as.data.frame(ode(inistate, finish, func = feedbackqAOP, pars))
+  
+  p = p + geom_line(data = out, aes(x = time, y = KE2, color = "KE2"), show.legend = FALSE, size = 1)
+  
+  # Annotate specific values of k
+  if(mie %in% annotate_values){
+    annotations[annotations$k == mie, "x"] <- max(out$time)
+    annotations[annotations$k == mie, "y"] <- tail(out$KE2, n = 1) + 0.1
+  }
+}
+
+print(annotations)  # Debugging print statement
+
+for(i in 1:nrow(annotations)){
+  p = p + annotate("text", x = annotations$x[i], y = annotations$y[i], 
+                   label = paste0("k=", round(annotations$k[i], 1)), hjust = 1, vjust = 0, size = 6)
+}
+
+p = p + labs(x = "Time (a.u.)", y = "") +
+  theme(axis.text = element_text(size = 24), axis.title = element_text(size = 30),  # Increased sizes
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.border = element_blank(), axis.line = element_line(color = "black"))
+
+tiff(paste0(output_folder,"/tcKE2_multMIE", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(p)
+dev.off()
+p
+```
+#1D
+```{r}
+p <- ggplot() + theme_classic()
+
+d1_values = seq(0, 2, by = 0.1)
+inistate = c(KE1 = 0, KE2 = 0)
+finish = seq(0, 75, by = 0.001)
+
+# Select specific values of d1 for annotation
+annotate_values = c(0.5, 2)
+annotations <- data.frame(d1 = annotate_values, x = NA, y = NA)
+
+for(d1 in d1_values){
+  pars = c(k = 0.4 , deg_KE1 = d1, s2 = 4,  deg_KE2 = 1, eps = 0.2, m = 3, k1 = 1)
+  out = as.data.frame(ode(inistate, finish, func = feedbackqAOP, pars))
+  
+  p = p + geom_line(data = out, aes(x = time, y = KE2, color = "KE2"), show.legend = FALSE, size = 1)
+  
+  # Annotate specific values of d1
+  if(d1 %in% annotate_values){
+    annotations[annotations$d1 == d1, "x"] <- max(out$time)
+    annotations[annotations$d1 == d1, "y"] <- tail(out$KE2, n = 1) + 0.1
+  }
+}
+
+for(i in 1:nrow(annotations)){
+  p = p + annotate("text", x = annotations$x[i], y = annotations$y[i], 
+                   label = paste0("d1=", round(annotations$d1[i], 1)), hjust = 1, vjust = 0, size = 5.5)
+}
+
+p = p + labs(x = "Time (a.u.)", y = "") +
+  theme(axis.text = element_text(size = 24), axis.title = element_text(size = 30),  # Increased sizes
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.border = element_blank(), axis.line = element_line(color = "black"))
+
+tiff(paste0(output_folder,"/tcKE2_multd1", ".png"), units="in", width=9, height=5.3, res=700, compression = 'lzw')
+  print(p)
+dev.off()
+p
+
+```

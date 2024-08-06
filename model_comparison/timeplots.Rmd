@@ -15,13 +15,14 @@ if (!require("pacman", quietly = T)) {
 pacman::p_load(tidyverse, cmdstanr, posterior, bayesplot, deSolve, conflicted,
                loo, gridExtra, latex2exp,viridis)
 
-output_folder = "~/Phd material/qAOP_framework/model_comparison"
-input_folder = "~/Phd material/qAOP_framework/model_comparison/fits"
-source("~/Phd material/qAOP_framework/model_comparison/qAOP_models.R")
+output_folder = "."
+input_folder = "./fits"
+source("./qAOP_models.R")
 conflict_prefer("sd", "stats")
 conflict_prefer("filter","dplyr")
 ```
 
+#For this to work, you need to manually copy the "fitqAOPX_datafromY.rds" files, together with "fakedata_qAOPY.csv", in the fits folder
 ```{r}
 
 # List all .rds files in the folder
@@ -66,6 +67,100 @@ data_stanB <- process_data(csv_data_list[["fakedata_qAOPB.csv"]]%>%select(-1))
 data_stanC <- process_data(csv_data_list[["fakedata_qAOPC.csv"]]%>%select(-1))
 ```
 
+```{r}
+model = "C"
+data = "C"
+fit = rds_data_list[[paste0("fitqAOP",model,"_datafrom",data,".rds")]]
+parsA = c("tau", "eps", "d1", "k_12", "d2", "k_2", "S0")
+parsB = c("tau", "eps", "d1", "k_12", "d2", "S0")
+parsC = c("tau", "eps", "d1", "k_12", "d2", "k_2", "h_2", "S0")
+pars = get(paste0("pars",model))
+# Extract draws and convert to data frame with iteration and chain
+draws_df <- fit$draws(format = "df", variables = pars) %>%
+  mutate(.iteration = rep(1:(nrow(.) / max(.chain)), times = max(.chain)),
+         .chain = rep(1:max(.chain), each = nrow(.) / max(.chain)))
+
+# Custom labels using expressions for ggplot2
+custom_labelsA <- c(tau = "tau", eps = "epsilon", d1 = "d[1]", k_12 = "k[12]", d2 = "d[2]", k_2 = "k[2]", S0 = "S[0]")
+custom_labelsB <- c(tau = "tau", eps = "epsilon", d1 = "d[1]", k_12 = "k[12]", d2 = "d[2]", S0 = "S[0]")
+custom_labelsC <- c(tau = "tau", eps = "epsilon", d1 = "d[1]", k_12 = "k[12]", d2 = "d[2]", k_2 = "k[2]", h_2 = "h[2]", S0 = "S[0]")
+custom_labels = get(paste0("custom_labels",model))
+
+# Remove unnecessary columns
+draws_df <- draws_df %>% select(-.draw)
+
+# Base theme with larger axis title, facet text size, legend text size, and tick labels
+base_theme <- theme_minimal() + 
+  theme(
+    axis.title = element_text(size = 18),  # Larger axis titles
+    strip.text = element_text(size = 18),  # Larger facet labels
+    legend.title = element_text(size = 18), # Larger legend title
+    legend.text = element_text(size = 18),  # Larger legend text
+    axis.text = element_text(size = 14),    # Larger tick labels
+    legend.margin = margin(t = 0, r = 30, b = 0, l = 0)  # Increase margin around legend
+  )
+
+# Function to round axis labels to 3 decimal places
+round3 <- label_number(accuracy = 0.001)
+
+# Create trace plot
+fit_trace <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = .iteration, y = value, color = as.factor(.chain))) +
+  geom_line(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Iteration", y = "Parameter value", color = "Chain") +
+  scale_x_continuous(breaks = c(0, 2000, 4000)) +  # Adjust x-axis breaks
+  base_theme
+
+# Create density plot
+fit_density <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = as.factor(.chain))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Parameter value", y = "Density", fill = "Chain") +
+  scale_x_continuous(labels = round3, breaks = function(x) {
+    breaks <- pretty(x, n = 3)
+    if (length(breaks) < 3) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust x-axis breaks to three values with 3 decimal digits
+  base_theme
+
+
+# Save the plots as TIFF files
+tiff(paste0(output_folder, "/", "Trace-plot_qAOP", model,"_datafrom",data, ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_trace)
+dev.off()
+
+tiff(paste0(output_folder, "/", "Density-plot_qAOP", model,"_datafrom",data, ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_density)
+dev.off()
+
+
+# Display the plots together
+grid.arrange(fit_trace, fit_density, ncol = 1)
+
+# Save the draws and summaries
+draws <- fit$draws(format = "draws_matrix", variables = pars)
+fit_summary <- fit$summary()
+
+loglikelihood <- fit$draws(format = "draws_matrix", variables = 'logLikelihood')
+draws_complete <- fit$draws(format = "draws_matrix")
+
+sumPar <- data.frame(fit_summary) %>% column_to_rownames("variable")
+
+parSets <- draws
+
+#saveRDS(fit, file = '~/Phd material/qAOP_framework/model_updating/fitqAOPup.rds')
+#write_csv(data.frame(fit_summary), "~/Phd material/qAOP_framework/model_updating/parameter_summary_qAOPup.csv")
+#write_csv(data.frame(draws_complete), "~/Phd material/qAOP_framework/model_updating/draws_qAOPup.csv")
+
+```
 
 #fit plots
 ```{r}
@@ -104,7 +199,7 @@ plot_KE <- function(fit, pars, data, model_func, variable, ymin, ymax, fit_name)
   # Adjust margins to fit larger labels
   par(mar = c(5, 6, 4, 2) + 0.1)  # Increase left margin for y-axis label
   
-  plot(x = data_filtered$time, y = data_filtered$mean, type = "p", pch = 19, ylab = paste0(variable), xlab = "Time", xlim = c(0, 100), ylim = c(ymin, ymax), cex.lab = 3, cex.axis = 2)
+  plot(x = data_filtered$time, y = data_filtered$mean, type = "p", pch = 19, xlab = "Time (a.u.)", ylab = paste0(variable, " (a.u)"), xlim = c(0, 100), ylim = c(ymin, ymax), cex.lab = 3, cex.axis = 2)
   arrows(data_filtered$time, data_filtered$mean - data_filtered$sd, data_filtered$time, data_filtered$mean + data_filtered$sd, length = 0, angle = 90, code = 3, lty = 2, lwd = 0.8)
   
   for (i in 1:100) {
@@ -159,7 +254,7 @@ for (fit_name in names(rds_data_list)) {
     plot_KE(fit, pars, data, model_func, "KE2", -0.2, 2.5, fit_name)
   } else {
     plot_KE(fit, pars, data, model_func, "MIE", -0.2, 0.7, fit_name)
-    plot_KE(fit, pars, data, model_func, "KE1", -0.2, 1.3, fit_name)
+    plot_KE(fit, pars, data, model_func, "KE1", -0.2, 1.4, fit_name)
     plot_KE(fit, pars, data, model_func, "KE2", -0.2, 1, fit_name)
   }
 }
