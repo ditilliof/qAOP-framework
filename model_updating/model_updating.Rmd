@@ -16,7 +16,7 @@ if (!require("pacman", quietly = T)) {
 pacman::p_load(tidyverse, cmdstanr, posterior, bayesplot, deSolve, conflicted,
                loo, gridExtra, latex2exp,viridis,scales)
 
-output_folder = "~/Phd material/qAOP_framework/model_updating"
+output_folder = "."
 ```
 
 

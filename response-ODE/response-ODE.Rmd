@@ -16,7 +16,8 @@ if (!require("pacman", quietly = T)) {
 }
 pacman::p_load(tidyverse, cmdstanr, posterior, bayesplot, deSolve, R.utils, conflicted, loo, RColorBrewer)
 
-output_folder = "~/Phd material/qAOP_framework/response-ODE"
+output_folder = "qAOP_framework/response-ODE"
+
 ```
 
 
