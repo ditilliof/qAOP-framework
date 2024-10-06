@@ -152,7 +152,7 @@ for i, k in enumerate(distribution_k_values):
 # Plot the percentage of AO_sc values above the threshold vs k
 ax = axs[1, 2]
 ax.plot(sorted_k_values, sorted_percentages, linewidth=2)
-ax.set_xlabel('k value', fontsize=20)
+ax.set_xlabel('k (a.u)', fontsize=20)
 ax.set_ylabel(f'Percentage of AO_sc > {threshold}', fontsize=20)
 ax.tick_params(axis='both', which='major', labelsize=18)
 ax.grid(False)
