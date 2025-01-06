@@ -8,8 +8,7 @@ Published in **Computational Toxicology**. DOI: [10.1016/j.comtox.2024.100330](h
 
 ### `feedback_qAOP`
 This folder contains files for generating Figures 1 and 5:
-- **Figure 1**: Run the code chunks in `feedback_qAOP.Rmd`. The bifurcation plot (Figure 1B) generation entails the call of `grindnew.R`
-- for phase portrait and bifurcation analyses.  
+- **Figure 1**: Run the code chunks in `feedback_qAOP.Rmd`. The bifurcation plot (Figure 1B) generation entails the call of `grindnew.R` for phase portrait and bifurcation analyses.  
 - **Figure 5**: Run the Python script `sAOP_dist_panel.py`. This script generates Figure 5 and saves individual distribution plots in a timestamped folder within the `simpleAOP` directory.
 
 ### `model_comparison`
