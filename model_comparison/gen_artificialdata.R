@@ -17,35 +17,35 @@ parsB = c(tau = 0.05, eps = 0.2, d1 = 0.5, k_12 = 0.3, d2 = 0.4)
 finish <- seq(1, 100, by = 10)
 outB <- as.data.frame(ode(inistateB, finish, func = qAOPB, parms = parsB))
 
-nrep <- 5  # number of fake replicates
+nrep <- 5  # number of artificial replicates
 std <- 0.1  # standard deviation to add noise to the solution
 
-fakedataB <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
+artdataB <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
 
 for (i in 1:length(finish)) {
   for (j in 1:nrep) {
-    fakedataB <- rbind(fakedataB, data.frame(time = finish[i], MIE = outB$MIE[i] + rnorm(1, mean = 0, sd = std),
+    artdataB <- rbind(artdataB, data.frame(time = finish[i], MIE = outB$MIE[i] + rnorm(1, mean = 0, sd = std),
                                              KE1 = outB$KE1[i] + rnorm(1, mean = 0, sd = std), 
                                              KE2 = outB$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
   }
 }
-write.csv(fakedataB, paste0(output_folder, "/fakedata_qAOPB.csv"))
+write.csv(artdataB, paste0(output_folder, "/artdata_qAOPB.csv"))
 
 # Initial state and parameters for model A
 inistateA = c(MIE = 0.5, KE1 = 0, KE2 = 0)
 parsA = c(tau = 0.05, eps = 0.2, d1 = 0.5, k_12 = 0.3, d2 = 0.4, k_2 = 0.05)
 outA = as.data.frame(ode(inistateA, finish, func = qAOPA, parms = parsA))
 
-fakedataA <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
+artdataA <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
 
 for (i in 1:length(finish)) {
   for (j in 1:nrep) {
-    fakedataA <- rbind(fakedataA, data.frame(time = finish[i], MIE = outA$MIE[i] + rnorm(1, mean = 0, sd = std),
+    artdataA <- rbind(artdataA, data.frame(time = finish[i], MIE = outA$MIE[i] + rnorm(1, mean = 0, sd = std),
                                              KE1 = outA$KE1[i] + rnorm(1, mean = 0, sd = std), 
                                              KE2 = outA$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
   }
 }
-write.csv(fakedataA, paste0(output_folder, "/fakedata_qAOPA.csv"))
+write.csv(artdataA, paste0(output_folder, "/artdata_qAOPA.csv"))
 
 # Initial state and parameters for model C
 inistateC = c(MIE = 0.5, KE1 = 0, KE2 = 0)
@@ -55,31 +55,31 @@ outC = as.data.frame(ode(inistateC, finishC, func = qAOPC, parms = parsC))
 
 std <- 0.3  # standard deviation to add noise to the solution
 
-fakedataC <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
+artdataC <- data.frame(time = numeric(), MIE = numeric(), KE1 = numeric(), KE2 = numeric(), REPLICATE = numeric())
 
 for (i in 1:length(finishC)) {
   for (j in 1:nrep) {
-    fakedataC <- rbind(fakedataC, data.frame(time = finishC[i], MIE = outC$MIE[i] + rnorm(1, mean = 0, sd = std),
+    artdataC <- rbind(artdataC, data.frame(time = finishC[i], MIE = outC$MIE[i] + rnorm(1, mean = 0, sd = std),
                                              KE1 = outC$KE1[i] + rnorm(1, mean = 0, sd = std), 
                                              KE2 = outC$KE2[i] + rnorm(1, mean = 0, sd = std), REPLICATE = j))
   }
 }
-write.csv(fakedataC, paste0(output_folder, "/fakedata_qAOPC.csv"))
+write.csv(artdataC, paste0(output_folder, "/artdata_qAOPC.csv"))
 
 # Process the data for each model
-data_stanA = fakedataA %>% 
+data_stanA = artdataA %>% 
   pivot_longer(!c(time, REPLICATE), names_to = "StateVar", values_to = "value") %>%
   group_by(time, StateVar) %>%
   summarise(mean = mean(value), sd = sd(value)) %>%
   ungroup()
 
-data_stanB = fakedataB %>% 
+data_stanB = artdataB %>% 
   pivot_longer(!c(time, REPLICATE), names_to = "StateVar", values_to = "value") %>%
   group_by(time, StateVar) %>%
   summarise(mean = mean(value), sd = sd(value)) %>%
   ungroup()
 
-data_stanC = fakedataC %>% 
+data_stanC = artdataC %>% 
   pivot_longer(!c(time, REPLICATE), names_to = "StateVar", values_to = "value") %>%
   group_by(time, StateVar) %>%
   summarise(mean = mean(value), sd = sd(value)) %>%
@@ -87,9 +87,9 @@ data_stanC = fakedataC %>%
 
 # Define the input data for the cmdstan run
 data_listA = list(
-  N = length(unique(fakedataA$time)),
+  N = length(unique(artdataA$time)),
   t0 = 0,
-  ts = unique(fakedataA$time), # does not have to include t0
+  ts = unique(artdataA$time), # does not have to include t0
   y_dose1 = as.matrix(data_stanA %>% select(-sd) %>%
                         group_by(time) %>%
                         pivot_wider(names_from = StateVar, values_from = mean) %>%
@@ -103,9 +103,9 @@ data_listA = list(
 )
 
 data_listB = list(
-  N = length(unique(fakedataB$time)),
+  N = length(unique(artdataB$time)),
   t0 = 0,
-  ts = unique(fakedataB$time), # does not have to include t0
+  ts = unique(artdataB$time), # does not have to include t0
   y_dose1 = as.matrix(data_stanB %>% select(-sd) %>%
                         group_by(time) %>%
                         pivot_wider(names_from = StateVar, values_from = mean) %>%
@@ -119,9 +119,9 @@ data_listB = list(
 )
 
 data_listC = list(
-  N = length(unique(fakedataC$time)),
+  N = length(unique(artdataC$time)),
   t0 = 0,
-  ts = unique(fakedataC$time), # does not have to include t0
+  ts = unique(artdataC$time), # does not have to include t0
   y_dose1 = as.matrix(data_stanC %>% select(-sd) %>%
                         group_by(time) %>%
                         pivot_wider(names_from = StateVar, values_from = mean) %>%
