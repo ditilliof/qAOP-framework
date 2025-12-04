@@ -80,17 +80,17 @@ write.csv(pars, paste0(output_folder, "/parameters.csv"))
 
 
 ```{r}
-#We now generate fake data from the model by adding noise to the solutions of the system.
+#We now generate artificial data from the model by adding noise to the solutions of the system.
 finish <- seq(1, 250, by = 15)  # assume we have data on 11 time points
 out <- as.data.frame(ode(inistate, finish, func = qAOPnetwork, parms = pars))
-nrep <- 5  # number of fake replicates
+nrep <- 5  # number of artificial replicates
 std <- 0.05  # set standard deviation to add noise to the solution
 
-fakedata <- data.frame(time = numeric(), MIE1 = numeric(),  MIE2 = numeric(), KE1 = numeric(), KE3 = numeric(), KE2 = numeric(), REPLICATE = numeric())
+artdata <- data.frame(time = numeric(), MIE1 = numeric(),  MIE2 = numeric(), KE1 = numeric(), KE3 = numeric(), KE2 = numeric(), REPLICATE = numeric())
 
 for (i in 1:length(finish)) {
   for (j in 1:nrep) {
-    fakedata <- rbind(fakedata, data.frame(time = finish[i], MIE1 = out$MIE1[i] + rnorm(1, mean = 0, sd = std),
+    artdata <- rbind(artdata, data.frame(time = finish[i], MIE1 = out$MIE1[i] + rnorm(1, mean = 0, sd = std),
                                              MIE2 = out$MIE2[i] + rnorm(1, mean = 0, sd = std),
                                              KE1 = out$KE1[i] + rnorm(1, mean = 0, sd = std), 
                                              KE3 = out$KE3[i] + rnorm(1, mean = 0, sd = std), 
@@ -98,10 +98,10 @@ for (i in 1:length(finish)) {
 }
 variable = "KE2"
 ggplot() + theme_bw() +
-  geom_point(data = fakedata, aes(time, get(variable), color = as.factor(REPLICATE))) + 
+  geom_point(data = artdata, aes(time, get(variable), color = as.factor(REPLICATE))) + 
   labs(x = "Time", y = variable, color = "Replicate number")
 
-write.csv(fakedata, paste0(output_folder,"/", "fakedatanetwork", ".csv"))
+write.csv(artdata, paste0(output_folder,"/", "artdatanetwork", ".csv"))
 
 length(finish)
 ```
@@ -110,7 +110,7 @@ length(finish)
 conflict_prefer("sd", "stats")
 conflict_prefer("filter", "dplyr")
 #redefine the data in terms of mean and sd
-data_stan = fakedata %>% 
+data_stan = artdata %>% 
   pivot_longer(!c(time,REPLICATE), names_to = "StateVar", values_to = "value") %>%
   group_by(time,StateVar) %>%
   summarise(mean = mean(value), sd = sd(value)) %>%
@@ -118,9 +118,9 @@ data_stan = fakedata %>%
 
 #define the input data for the cmdrstan run (the variables need to coincide with what we have defined in the "data" block of the Stan file)
 data_list=list(
-N = length(unique(fakedata$time)),
+N = length(unique(artdata$time)),
 t0 = 0,
-ts = unique(fakedata$time), #does not have to include t0
+ts = unique(artdata$time), #does not have to include t0
 y = as.matrix(data_stan %>% select(-sd)%>%
                       group_by(time) %>%
   pivot_wider(names_from = StateVar, values_from = mean) %>%
@@ -321,7 +321,7 @@ plot_KE("KE2", -0.05, 0.6)
 conflict_prefer("sd", "stats")
 conflict_prefer("filter", "dplyr")
 #redefine the data in terms of mean and sd
-data_stan = fakedata %>% 
+data_stan = artdata %>% 
   pivot_longer(!c(time,REPLICATE), names_to = "StateVar", values_to = "value") %>%
   group_by(time,StateVar) %>%
   summarise(mean = mean(value), sd = sd(value)) %>%
@@ -329,9 +329,9 @@ data_stan = fakedata %>%
 
 #define the input data for the cmdrstan run (the variables need to coincide with what we have defined in the "data" block of the Stan file)
 data_list=list(
-N = length(unique(fakedata$time)),
+N = length(unique(artdata$time)),
 t0 = 0,
-ts = unique(fakedata$time), #does not have to include t0
+ts = unique(artdata$time), #does not have to include t0
 y = as.matrix(data_stan %>% select(-sd)%>%
                       group_by(time) %>%
   pivot_wider(names_from = StateVar, values_from = mean) %>%
