@@ -22,7 +22,7 @@ conflict_prefer("sd", "stats")
 conflict_prefer("filter","dplyr")
 ```
 
-#For this to work, you need to manually copy the "fitqAOPX_datafromY.rds" files, together with "fakedata_qAOPY.csv", in the fits folder
+#For this to work, you need to manually copy the "fitqAOPX_datafromY.rds" files, together with "artdata_qAOPY.csv", in the fits folder
 ```{r}
 
 # List all .rds files in the folder
@@ -62,9 +62,9 @@ process_data <- function(data) {
 }
 
 # Process the data for each model
-data_stanA <- process_data(csv_data_list[["fakedata_qAOPA.csv"]]%>%select(-1))
-data_stanB <- process_data(csv_data_list[["fakedata_qAOPB.csv"]]%>%select(-1))
-data_stanC <- process_data(csv_data_list[["fakedata_qAOPC.csv"]]%>%select(-1))
+data_stanA <- process_data(csv_data_list[["artdata_qAOPA.csv"]]%>%select(-1))
+data_stanB <- process_data(csv_data_list[["artdata_qAOPB.csv"]]%>%select(-1))
+data_stanC <- process_data(csv_data_list[["artdata_qAOPC.csv"]]%>%select(-1))
 ```
 
 ```{r}
