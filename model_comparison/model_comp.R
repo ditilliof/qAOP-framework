@@ -8,7 +8,7 @@ conflict_prefer("sd", "stats")
 conflict_prefer("filter","dplyr")
 getwd()
 source("./model_comparison/qAOP_models.R")
-source("./model_comparison/fakedataABC.R")
+source("./model_comparison/gen_artificialdata.R")
 
 model = readline("choose first model to run: ")
 model2 = readline("choose second model to run: ")
